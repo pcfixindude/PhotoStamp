@@ -1,37 +1,86 @@
 """Batch folder processing."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, Iterator
+from typing import Callable, Iterator, Optional
 
-from photostamp.config import SUPPORTED_EXTENSIONS, StampSettings
+from PIL import Image
+
+from photostamp.config import DEFAULT_OUTPUT_FOLDER_NAME, SUPPORTED_EXTENSIONS, StampSettings
+from photostamp.filename import stamp_text_from_filename
+from photostamp.stamping import save_stamped_image, stamp_image
 
 
 @dataclass
 class BatchResult:
-    """Summary of a batch run."""
+    """Summary of a completed batch run."""
 
     processed: int = 0
     skipped: int = 0
-    errors: list[str] | None = None
+    errors: list[str] = field(default_factory=list)
 
 
 def iter_images(folder: Path) -> Iterator[Path]:
-    """Yield supported image files in *folder* (non-recursive)."""
-    raise NotImplementedError
+    """Yield supported image files in *folder* (non-recursive, sorted by name)."""
+    for path in sorted(folder.iterdir()):
+        if path.is_file() and path.suffix.lower() in SUPPORTED_EXTENSIONS:
+            yield path
 
 
-def resolve_output_folder(input_folder: Path, output_folder: Path | None) -> Path:
-    """Return the output folder, creating the default subfolder if needed."""
-    raise NotImplementedError
+def resolve_output_folder(
+    input_folder: Path,
+    output_folder: Optional[Path],
+) -> Path:
+    """Return the output folder, creating it if it does not already exist."""
+    out = output_folder if output_folder else input_folder / DEFAULT_OUTPUT_FOLDER_NAME
+    out.mkdir(parents=True, exist_ok=True)
+    return out
 
 
 def process_folder(
     input_folder: Path,
-    output_folder: Path | None,
+    output_folder: Optional[Path],
     settings: StampSettings,
     *,
-    on_progress: Callable[[str], None] | None = None,
+    on_progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> BatchResult:
-    """Stamp every supported image in *input_folder* and write copies to output."""
-    raise NotImplementedError
+    """Stamp every supported image in *input_folder* and save copies to *output_folder*.
+
+    *on_progress* is called as ``on_progress(current, total, message)`` after
+    each image so callers can update a progress bar or status label.
+    Errors on individual images are collected; the batch always continues.
+    """
+    result = BatchResult()
+    images = list(iter_images(input_folder))
+    total = len(images)
+
+    if total == 0:
+        return result
+
+    out_dir = resolve_output_folder(input_folder, output_folder)
+
+    for i, img_path in enumerate(images, 1):
+        if on_progress:
+            on_progress(i, total, f"Processing {img_path.name}  ({i}/{total})")
+
+        try:
+            with Image.open(img_path) as img:
+                img.load()  # force full decode while file is open
+                text = stamp_text_from_filename(
+                    img_path.name, title_case=settings.title_case
+                )
+                stamped = stamp_image(img, text, settings)
+
+            save_stamped_image(stamped, out_dir / img_path.name)
+            result.processed += 1
+
+        except Exception as exc:
+            result.errors.append(f"{img_path.name}: {exc}")
+
+    if on_progress:
+        summary = f"Done — {result.processed} stamped"
+        if result.errors:
+            summary += f", {len(result.errors)} error(s)"
+        on_progress(total, total, summary)
+
+    return result

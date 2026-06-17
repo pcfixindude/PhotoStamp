@@ -1,112 +1,103 @@
 # PhotoStamp
 
-Local batch photo-stamping utility. Select a folder of images, derive stamp text from each filename, and save stamped copies without modifying the originals.
+Local batch photo-stamping utility. Select a folder of images, derive stamp text from each filename, and save stamped copies — originals are never modified.
 
-Works offline — no cloud APIs or internet services.
+Works fully offline. No cloud APIs, no internet required.
+
+---
 
 ## Requirements
 
-- Python 3.10+
+- Python 3.10 or later
 - macOS or Windows
+
+---
 
 ## Setup
 
 ```bash
+# 1. Create and activate a virtual environment
 python3 -m venv .venv
-source .venv/bin/activate   # Windows: .venv\Scripts\activate
+source .venv/bin/activate        # macOS / Linux
+# .venv\Scripts\activate         # Windows (cmd)
+
+# 2. Install dependencies
 pip install -r requirements.txt
 ```
 
-## Run (once implemented)
+---
+
+## Run
 
 ```bash
 python app.py
 ```
 
-## Project structure
+---
+
+## Basic usage
+
+1. **Select Input Folder** — click *Browse…* next to "Input" and choose the folder containing your photos.
+2. **Select Output Folder** *(optional)* — click *Browse…* next to "Output". If you skip this, stamped copies are saved to a `PhotoStamp Output` subfolder inside the input folder.
+3. **Adjust settings** as needed (see below).
+4. **Preview** — click *Preview First Image* to see how the stamp looks before committing.
+5. **Stamp** — click *Stamp All Photos* to process the entire folder. A progress bar and status message track the run. Any errors are reported at the end without stopping the batch.
+
+### Settings at a glance
+
+| Setting | What it does |
+|---|---|
+| Title Case | Capitalises the first letter of each word in the stamp text |
+| Font | Font family for the stamp text (type or pick from the list) |
+| Size / Auto | Font size in pt; leave *Auto* checked to fit the band automatically |
+| Color (Text) | Colour of the stamp text |
+| Align | Horizontal text alignment: Left / Center / Right |
+| Band Enabled | Toggle the coloured band on or off |
+| Position | Which edge the band sits on: bottom, top, left, or right |
+| Size % | Band thickness as a percentage of the image dimension it spans |
+| Color (Band) | Fill colour of the band |
+| Opacity | 100 % = fully opaque; 0 % = fully transparent (text-only effect) |
+
+### How stamp text is derived
+
+The stamp text comes from the **filename** (no extension):
+
+- Underscores `_` and dashes `-` are replaced with spaces.
+- Extra spaces are trimmed.
+- *Title Case* is applied if the checkbox is on.
+
+Examples:
+
+| Filename | Stamp text (default) | Stamp text (Title Case) |
+|---|---|---|
+| `emma_johnson.jpg` | `emma johnson` | `Emma Johnson` |
+| `product-123-blue.png` | `product 123 blue` | `Product 123 Blue` |
+| `IMG_0042.jpeg` | `IMG 0042` | `Img 0042` |
+
+### Supported formats
+
+`.jpg` · `.jpeg` · `.png` · `.webp` · `.bmp`
+
+---
+
+## Project layout
 
 ```
 PhotoStamp/
-├── app.py                  # Entry point
+├── app.py                     # Entry point
 ├── photostamp/
-│   ├── config.py           # StampSettings, defaults, enums
-│   ├── filename.py         # Filename → stamp text
-│   ├── stamping.py         # Pillow draw band + text
-│   ├── batch.py            # Folder scan, output path, batch loop
+│   ├── config.py              # StampSettings dataclass + enums + defaults
+│   ├── filename.py            # Filename → stamp text
+│   ├── stamping.py            # Pillow: draw band + text, save
+│   ├── batch.py               # Folder scan + batch loop
 │   └── gui/
-│       ├── main_window.py  # Folder pickers, settings, run controls
-│       └── preview.py      # Live preview of one image
+│       ├── main_window.py     # Main Tkinter window + all controls
+│       └── preview.py         # Canvas-based preview panel widget
 ├── requirements.txt
 └── README.md
 ```
 
-## Version 1 features
-
-| Feature | Module |
-|--------|--------|
-| Select input / output folders | `gui/main_window.py` |
-| Default output: `PhotoStamp Output` inside input | `batch.resolve_output_folder` |
-| Formats: jpg, jpeg, png, webp, bmp | `config.SUPPORTED_EXTENSIONS` |
-| Stamp text from filename (no extension) | `filename.stamp_text_from_filename` |
-| `_` and `-` → spaces, trim whitespace | `filename` |
-| Optional title case | `StampSettings.title_case` |
-| Never modify originals | `stamping` + `batch` (write copies only) |
-| Progress / status | `gui/main_window.py` + `batch.on_progress` |
-| Preview one image | `gui/preview.py` |
-
-### Default stamp look
-
-- White band along the bottom (~15% of image height)
-- Black Arial text, centered in the band
-- Band fully opaque
-
-### Customization (settings panel)
-
-**Text:** font, size, color, alignment (left / center / right), title case
-
-**Band:** enabled, position (top / bottom / left / right), size, color, opacity
-
-## Implementation plan
-
-Build in this order so each step is testable before the GUI wires everything together.
-
-### Phase 1 — Core logic (no GUI)
-
-1. **`filename.py`** — `stamp_text_from_filename("emma_johnson-sponsor.jpg")` → `"emma johnson sponsor"`; optional title case → `"Emma Johnson Sponsor"`.
-2. **`stamping.py`** — Given a Pillow `Image` and `StampSettings`:
-   - Compute band rectangle from position + `band_size_ratio`
-   - Draw semi-opaque band (RGBA overlay when opacity &lt; 1)
-   - Load font (Arial with fallback), auto-size if `font_size` is `None`
-   - Draw text with alignment inside the band
-   - Return a new image object
-3. **`batch.py`** — Scan folder, resolve output path, loop: open → stamp → save. Report progress via callback. Skip unsupported files; collect errors without stopping the whole batch.
-
-### Phase 2 — GUI shell
-
-4. **`gui/main_window.py`** — Tkinter window with:
-   - Input folder button + path label
-   - Output folder button + path label (optional; show resolved default)
-   - Settings grouped into Text and Band sections (bound to `StampSettings`)
-   - Status label + indeterminate/determinate progress during batch
-   - **Preview** button and **Run** button
-5. **`gui/preview.py`** — Pick first image in input folder (or let user choose one file), render stamped preview in a `Label` / `Canvas`, update when settings change.
-
-### Phase 3 — Polish
-
-6. Persist last-used folders and settings to a local JSON file (optional, v1.1).
-7. Error dialogs for empty folders, missing fonts, write failures.
-8. Manual test on macOS; note any Windows font-path differences for Arial.
-
-### Phase 4 — Packaging (later)
-
-9. PyInstaller spec for a single-folder Windows build.
-10. Smoke-test on Windows.
-
-## Design notes
-
-- **Generic naming** — UI strings say “stamp text” / “label”, not “child name”, so the same app works for inventory, events, missions, etc.
-- **Non-destructive** — Originals are only read; all writes go to the output folder.
-- **No sample data required** — The app runs with any user-selected folders; no bundled sample photos.
+---
 
 ## License
 

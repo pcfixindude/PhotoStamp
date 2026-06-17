@@ -3,4 +3,7 @@
 
 def run_app() -> None:
     """Launch the main application window."""
-    raise NotImplementedError("GUI not yet implemented")
+    from photostamp.gui.main_window import PhotoStampApp
+
+    app = PhotoStampApp()
+    app.mainloop()
