@@ -43,6 +43,14 @@ python app.py
 4. **Preview** — click *Preview First Image* to see how the stamp looks before committing.
 5. **Stamp** — click *Stamp All Photos* to process the entire folder. A progress bar and status message track the run. Any errors are reported at the end without stopping the batch.
 
+### Saved settings
+
+PhotoStamp remembers your preferences in a local `settings.json` file in the project folder. Settings are loaded when the app starts and saved when you close the app or finish a batch stamp.
+
+Saved items include last input/output folders, title-case preference, font, text options, and band options. Image data is never stored.
+
+If `settings.json` is missing or corrupted, the app falls back to defaults and continues normally. The file is listed in `.gitignore` so it is not committed to Git.
+
 ### Settings at a glance
 
 | Setting | What it does |
@@ -90,6 +98,7 @@ PhotoStamp/
 │   ├── filename.py            # Filename → stamp text
 │   ├── stamping.py            # Pillow: draw band + text, save
 │   ├── batch.py               # Folder scan + batch loop
+│   ├── settings_store.py      # Load/save settings.json
 │   └── gui/
 │       ├── main_window.py     # Main Tkinter window + all controls
 │       └── preview.py         # Canvas-based preview panel widget

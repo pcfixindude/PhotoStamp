@@ -15,6 +15,7 @@ from photostamp.config import BandPosition, StampSettings, TextAlignment
 from photostamp.filename import stamp_text_from_filename
 from photostamp.fonts import list_available_fonts
 from photostamp.gui.preview import PreviewPanel
+from photostamp.settings_store import UserSettings, load_settings, save_settings
 from photostamp.stamping import stamp_image
 
 
@@ -66,6 +67,8 @@ class PhotoStampApp(tk.Tk):
 
         self._init_vars()
         self._build_ui()
+        self._load_saved_settings()
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.geometry("1100x680")
 
     # ------------------------------------------------------------------
@@ -319,6 +322,71 @@ class PhotoStampApp(tk.Tk):
     # Settings
     # ------------------------------------------------------------------
 
+    def _collect_user_settings(self) -> UserSettings:
+        """Snapshot current UI state for persistence."""
+        return UserSettings(
+            input_folder=str(self._input_folder) if self._input_folder else None,
+            output_folder=str(self._output_folder) if self._output_folder else None,
+            title_case=self._title_case.get(),
+            font_family=self._font_family.get(),
+            font_size_auto=self._font_size_auto.get(),
+            font_size=self._font_size.get(),
+            text_color=self._text_color.get(),
+            text_alignment=self._text_align.get(),
+            band_enabled=self._band_enabled.get(),
+            band_position=self._band_position.get(),
+            band_size=self._band_size.get(),
+            band_color=self._band_color.get(),
+            band_opacity=self._band_opacity.get(),
+        )
+
+    def _apply_user_settings(self, saved: UserSettings) -> None:
+        """Restore UI controls from *saved*."""
+        if saved.input_folder:
+            self._input_folder = Path(saved.input_folder)
+            self._input_display.set(_short_path(self._input_folder))
+        else:
+            self._input_folder = None
+            self._input_display.set("No folder selected")
+
+        if saved.output_folder:
+            self._output_folder = Path(saved.output_folder)
+            self._output_display.set(_short_path(self._output_folder))
+        else:
+            self._output_folder = None
+            self._output_display.set("Default (inside input folder)")
+
+        self._title_case.set(saved.title_case)
+        self._font_family.set(saved.font_family)
+        self._font_size_auto.set(saved.font_size_auto)
+        self._font_size.set(saved.font_size)
+        self._text_color.set(saved.text_color)
+        self._text_align.set(saved.text_alignment)
+        self._band_enabled.set(saved.band_enabled)
+        self._band_position.set(saved.band_position)
+        self._band_size.set(saved.band_size)
+        self._band_color.set(saved.band_color)
+        self._band_opacity.set(saved.band_opacity)
+
+        # Keep slider labels in sync with restored values.
+        if hasattr(self, "_band_size_lbl"):
+            self._band_size_lbl.config(text=f"{saved.band_size}%")
+        if hasattr(self, "_opacity_lbl"):
+            self._opacity_lbl.config(text=f"{saved.band_opacity}%")
+
+    def _load_saved_settings(self) -> None:
+        """Load preferences from settings.json, using defaults on any error."""
+        self._apply_user_settings(load_settings())
+
+    def _persist_settings(self) -> None:
+        """Write current preferences to settings.json (best-effort)."""
+        save_settings(self._collect_user_settings())
+
+    def _on_close(self) -> None:
+        """Save settings and exit."""
+        self._persist_settings()
+        self.destroy()
+
     def _get_settings(self) -> StampSettings:
         """Read all control variables and return a StampSettings instance."""
         return StampSettings(
@@ -473,6 +541,8 @@ class PhotoStampApp(tk.Tk):
                 f"{result.processed} photo(s) stamped successfully.",
                 parent=self,
             )
+
+        self._persist_settings()
 
 
 # ---------------------------------------------------------------------------
