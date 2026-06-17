@@ -1,101 +1,12 @@
 """Pillow-based image stamping."""
 
-import sys
 from pathlib import Path
 from typing import Optional
 
 from PIL import Image, ImageDraw, ImageFont
 
 from photostamp.config import BandPosition, StampSettings, TextAlignment
-
-
-# ---------------------------------------------------------------------------
-# Font loading
-# ---------------------------------------------------------------------------
-
-def _find_font_file(family: str) -> Optional[str]:
-    """Search OS font directories for a TTF/OTF file matching *family*."""
-    name_key = family.lower().replace(" ", "")
-
-    if sys.platform == "win32":
-        import os
-        dirs = [Path(os.environ.get("WINDIR", "C:\\Windows")) / "Fonts"]
-    elif sys.platform == "darwin":
-        dirs = [
-            Path("/Library/Fonts"),
-            Path("/System/Library/Fonts"),
-            Path("/System/Library/Fonts/Supplemental"),
-            Path.home() / "Library/Fonts",
-        ]
-    else:
-        dirs = [
-            Path("/usr/share/fonts"),
-            Path("/usr/local/share/fonts"),
-            Path.home() / ".fonts",
-        ]
-
-    candidates: list[Path] = []
-    for d in dirs:
-        if not d.exists():
-            continue
-        try:
-            for f in d.rglob("*"):
-                if f.suffix.lower() not in (".ttf", ".otf"):
-                    continue
-                stem_key = (
-                    f.stem.lower().replace(" ", "").replace("-", "").replace("_", "")
-                )
-                if stem_key == name_key or stem_key.startswith(name_key):
-                    candidates.append(f)
-        except PermissionError:
-            continue
-
-    if not candidates:
-        return None
-    # Prefer the shortest stem name (most likely the "regular" variant)
-    candidates.sort(key=lambda p: len(p.stem))
-    return str(candidates[0])
-
-
-def _find_any_font() -> Optional[str]:
-    """Return the path to any available TrueType font on the system."""
-    if sys.platform == "win32":
-        dirs = [Path("C:/Windows/Fonts")]
-    elif sys.platform == "darwin":
-        dirs = [Path("/Library/Fonts"), Path("/System/Library/Fonts")]
-    else:
-        dirs = [Path("/usr/share/fonts")]
-
-    for d in dirs:
-        if not d.exists():
-            continue
-        for f in d.rglob("*.ttf"):
-            return str(f)
-    return None
-
-
-def load_font(family: str, size: int) -> ImageFont.ImageFont:
-    """Load a font by family name and size, falling back gracefully."""
-    font_path = _find_font_file(family)
-    if font_path:
-        try:
-            return ImageFont.truetype(font_path, size)
-        except (IOError, OSError):
-            pass
-
-    # Try any available font on the system
-    any_font = _find_any_font()
-    if any_font:
-        try:
-            return ImageFont.truetype(any_font, size)
-        except (IOError, OSError):
-            pass
-
-    # Absolute last resort: Pillow's built-in bitmap font
-    try:
-        return ImageFont.load_default(size=size)   # Pillow >= 10.1
-    except TypeError:
-        return ImageFont.load_default()
+from photostamp.fonts import load_font
 
 
 # ---------------------------------------------------------------------------
@@ -103,26 +14,38 @@ def load_font(family: str, size: int) -> ImageFont.ImageFont:
 # ---------------------------------------------------------------------------
 
 def _auto_font_size(band_h: int, band_w: int, text: str, family: str) -> int:
-    """Return the largest font size that fits *text* inside the band."""
+    """Return the largest font size (pt) where *text* fits inside the band.
+
+    The maximum size is capped at 65 % of the band's height so the text has
+    vertical breathing room. Then a binary search narrows down the exact point
+    size where the rendered width fits within 92 % of the band width (4 %
+    padding each side). Binary search is used instead of simple proportional
+    scaling because font metrics are not perfectly linear across sizes.
+    """
     if not text:
         return max(8, int(band_h * 0.65))
 
-    target = max(8, int(band_h * 0.65))
-    font = load_font(family, target)
+    max_by_height = max(8, int(band_h * 0.65))
+    available_w = int(band_w * 0.92)
 
-    # Measure at target size
+    # Reuse a single tiny scratch image for all measurements — no pixels
+    # are rendered, only metrics are queried.
     dummy = Image.new("RGB", (1, 1))
     draw = ImageDraw.Draw(dummy)
-    bbox = draw.textbbox((0, 0), text, font=font)
-    text_w = bbox[2] - bbox[0]
 
-    available_w = band_w * 0.92  # 4 % padding per side
-    if text_w <= available_w:
-        return target
+    lo, hi, best = 8, max_by_height, 8
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        font = load_font(family, mid)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        tw = bbox[2] - bbox[0]
+        if tw <= available_w:
+            best = mid
+            lo = mid + 1
+        else:
+            hi = mid - 1
 
-    # Scale down proportionally so text fits width
-    scale = available_w / text_w
-    return max(8, int(target * scale))
+    return best
 
 
 # ---------------------------------------------------------------------------
@@ -138,26 +61,24 @@ def stamp_image(image: Image.Image, text: str, settings: StampSettings) -> Image
 
     w, h = img.size
 
-    # --- Band rectangle ---
+    # --- Compute band rectangle ---
     pos = settings.band_position
     if pos in (BandPosition.TOP, BandPosition.BOTTOM):
         band_thick = max(1, int(h * settings.band_size_ratio))
-        if pos == BandPosition.BOTTOM:
-            band_box = (0, h - band_thick, w, h)
-        else:
-            band_box = (0, 0, w, band_thick)
+        band_box = (0, h - band_thick, w, h) if pos == BandPosition.BOTTOM \
+                   else (0, 0, w, band_thick)
         text_area_w, text_area_h = w, band_thick
     else:  # LEFT or RIGHT
         band_thick = max(1, int(w * settings.band_size_ratio))
-        if pos == BandPosition.LEFT:
-            band_box = (0, 0, band_thick, h)
-        else:
-            band_box = (w - band_thick, 0, w, h)
+        band_box = (w - band_thick, 0, w, h) if pos == BandPosition.RIGHT \
+                   else (0, 0, band_thick, h)
         text_area_w, text_area_h = band_thick, h
 
-    bx1, by1, bx2, by2 = band_box
+    bx1, by1, _bx2, _by2 = band_box
 
-    # --- Draw band via RGBA alpha-composite (handles opacity) ---
+    # --- Draw band via RGBA alpha-composite ---
+    # Converting to RGBA lets us paint a partially-transparent rectangle
+    # cleanly over any source mode (RGB, P, L, etc.).
     original_mode = img.mode
     img_rgba = img.convert("RGBA")
 
@@ -168,9 +89,7 @@ def stamp_image(image: Image.Image, text: str, settings: StampSettings) -> Image
     )
     img_rgba = Image.alpha_composite(img_rgba, overlay)
 
-    # --- Draw text ---
-    draw = ImageDraw.Draw(img_rgba)
-
+    # --- Resolve font and size ---
     font_size = settings.font_size
     if font_size is None:
         font_size = _auto_font_size(
@@ -179,21 +98,28 @@ def stamp_image(image: Image.Image, text: str, settings: StampSettings) -> Image
 
     font = load_font(settings.font_family, font_size)
 
+    # --- Measure text precisely ---
+    # textbbox returns (x0, y0, x1, y1) relative to the anchor (0, 0).
+    # x0 / y0 are non-zero when the font has a left or top bearing (common in
+    # TrueType fonts). Accounting for these offsets is necessary for accurate
+    # centering; ignoring them causes text to drift slightly off-center.
+    draw = ImageDraw.Draw(img_rgba)
     bbox = draw.textbbox((0, 0), text, font=font)
-    text_w = bbox[2] - bbox[0]
-    text_h = bbox[3] - bbox[1]
+    x0, y0 = bbox[0], bbox[1]
+    text_w = bbox[2] - x0
+    text_h = bbox[3] - y0
 
-    # Horizontal alignment within band
+    # --- Horizontal position ---
     padding = max(8, int(text_area_w * 0.02))
     if settings.text_alignment == TextAlignment.LEFT:
-        tx = bx1 + padding
+        tx = bx1 + padding - x0
     elif settings.text_alignment == TextAlignment.RIGHT:
-        tx = bx2 - text_w - padding
+        tx = bx1 + text_area_w - text_w - padding - x0
     else:  # CENTER
-        tx = bx1 + (text_area_w - text_w) // 2
+        tx = bx1 + (text_area_w - text_w) // 2 - x0
 
-    # Vertical: center in band
-    ty = by1 + (text_area_h - text_h) // 2
+    # --- Vertical position: center in band ---
+    ty = by1 + (text_area_h - text_h) // 2 - y0
 
     draw.text((tx, ty), text, font=font, fill=(*settings.text_color, 255))
 
@@ -215,10 +141,11 @@ def save_stamped_image(
     *,
     source_format: Optional[str] = None,
 ) -> None:
-    """Write *image* to *output_path*, choosing the best save options per format."""
+    """Write *image* to *output_path*, choosing the best options per format."""
     ext = output_path.suffix.lower()
 
     if ext in (".jpg", ".jpeg"):
+        # JPEG does not support an alpha channel.
         if image.mode in ("RGBA", "LA", "P"):
             image = image.convert("RGB")
         image.save(output_path, "JPEG", quality=95, optimize=True)

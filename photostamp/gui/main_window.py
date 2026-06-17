@@ -13,6 +13,7 @@ from PIL import Image
 from photostamp.batch import BatchResult, iter_images, process_folder
 from photostamp.config import BandPosition, StampSettings, TextAlignment
 from photostamp.filename import stamp_text_from_filename
+from photostamp.fonts import list_available_fonts
 from photostamp.gui.preview import PreviewPanel
 from photostamp.stamping import stamp_image
 
@@ -21,18 +22,9 @@ from photostamp.stamping import stamp_image
 # Constants
 # ---------------------------------------------------------------------------
 
-COMMON_FONTS = [
-    "Arial",
-    "Helvetica",
-    "Times New Roman",
-    "Georgia",
-    "Verdana",
-    "Trebuchet MS",
-    "Impact",
-    "Courier New",
-    "Tahoma",
-    "Comic Sans MS",
-]
+# Populated at import time by scanning known font paths on the current OS.
+# Fonts that cannot be found are omitted; the user may still type any name.
+_AVAILABLE_FONTS: list[str] = list_available_fonts()
 
 CONTROLS_WIDTH = 300  # pixels
 
@@ -88,7 +80,9 @@ class PhotoStampApp(tk.Tk):
 
         # Text settings
         self._title_case = tk.BooleanVar(value=False)
-        self._font_family = tk.StringVar(value="Arial")
+        # Use the first detected font (Arial if available, else best alternative).
+        default_font = _AVAILABLE_FONTS[0] if _AVAILABLE_FONTS else "Arial"
+        self._font_family = tk.StringVar(value=default_font)
         self._font_size_auto = tk.BooleanVar(value=True)
         self._font_size = tk.IntVar(value=32)
         self._text_color = tk.StringVar(value="#000000")
@@ -202,11 +196,12 @@ class PhotoStampApp(tk.Tk):
         ).grid(row=r, column=0, columnspan=2, sticky="w")
         r += 1
 
-        # Font family
+        # Font family — values come from fonts actually detected on this system.
+        # The user can also type any font name; load_font() falls back gracefully.
         ttk.Label(parent, text="Font:").grid(row=r, column=0, sticky="w", pady=(6, 0))
         ttk.Combobox(
             parent, textvariable=self._font_family,
-            values=COMMON_FONTS, width=14,
+            values=_AVAILABLE_FONTS, width=14,
         ).grid(row=r, column=1, sticky="ew", pady=(6, 0))
         r += 1
 
