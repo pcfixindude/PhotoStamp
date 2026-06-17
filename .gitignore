@@ -6,5 +6,7 @@ build/
 *.spec
 .DS_Store
 settings.json
+*.egg-info/
+.pytest_cache/
 sample_photos/
 output/
