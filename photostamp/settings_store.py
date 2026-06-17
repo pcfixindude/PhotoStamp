@@ -6,6 +6,7 @@ defaults are used and the app continues normally.
 """
 
 import json
+import sys
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
@@ -13,8 +14,19 @@ from typing import Any, Optional
 from photostamp.config import DEFAULT_FONT_FAMILY
 
 
-# Stored next to the project root (same directory as app.py).
-_SETTINGS_PATH = Path(__file__).resolve().parent.parent / "settings.json"
+def _settings_dir() -> Path:
+    """Return the folder where settings.json should live.
+
+    When running from source, that is the project root (next to app.py).
+    When packaged with PyInstaller, it is the folder containing PhotoStamp.exe
+    so settings persist after the app closes.
+    """
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+_SETTINGS_PATH = _settings_dir() / "settings.json"
 
 _VALID_ALIGNMENTS = {"left", "center", "right"}
 _VALID_BAND_POSITIONS = {"top", "bottom", "left", "right"}
