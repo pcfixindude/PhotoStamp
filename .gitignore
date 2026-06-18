@@ -10,3 +10,13 @@ settings.json
 .pytest_cache/
 sample_photos/
 output/
+
+# Build artifacts
+build/
+dist/
+mac_dmg/
+*.dmg
+*.spec
+
+# Local app settings
+settings.json
