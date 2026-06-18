@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Optional
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw
 
 from photostamp.config import BandPosition, StampSettings, TextAlignment
 from photostamp.fonts import load_font
@@ -13,33 +13,33 @@ from photostamp.fonts import load_font
 # Auto font-size calculation
 # ---------------------------------------------------------------------------
 
-def _auto_font_size(band_h: int, band_w: int, text: str, family: str) -> int:
-    """Return the largest font size (pt) where *text* fits inside the band.
+def _auto_font_size(
+    band_h: int,
+    band_w: int,
+    name_text: str,
+    family: str,
+    date_text: str = "",
+) -> int:
+    """Return the largest name font size where one/two lines fit in the band.
 
-    The maximum size is capped at 65 % of the band's height so the text has
-    vertical breathing room. Then a binary search narrows down the exact point
-    size where the rendered width fits within 92 % of the band width (4 %
-    padding each side). Binary search is used instead of simple proportional
-    scaling because font metrics are not perfectly linear across sizes.
+    The optional date line is measured at 80% of the name size unless a manual
+    date size is supplied later. Binary search avoids assuming font metrics are
+    perfectly linear across sizes.
     """
-    if not text:
+    if not name_text:
         return max(8, int(band_h * 0.65))
 
-    max_by_height = max(8, int(band_h * 0.65))
     available_w = int(band_w * 0.92)
-
-    # Reuse a single tiny scratch image for all measurements — no pixels
-    # are rendered, only metrics are queried.
+    max_by_height = max(8, int(band_h * (0.65 if not date_text else 0.48)))
     dummy = Image.new("RGB", (1, 1))
     draw = ImageDraw.Draw(dummy)
 
     lo, hi, best = 8, max_by_height, 8
     while lo <= hi:
         mid = (lo + hi) // 2
-        font = load_font(family, mid)
-        bbox = draw.textbbox((0, 0), text, font=font)
-        tw = bbox[2] - bbox[0]
-        if tw <= available_w:
+        date_size = max(8, int(mid * 0.8))
+        layout = _measure_lines(draw, family, name_text, mid, date_text, date_size)
+        if layout["width"] <= available_w and layout["height"] <= int(band_h * 0.9):
             best = mid
             lo = mid + 1
         else:
@@ -48,14 +48,77 @@ def _auto_font_size(band_h: int, band_w: int, text: str, family: str) -> int:
     return best
 
 
+def _measure_lines(
+    draw: ImageDraw.ImageDraw,
+    family: str,
+    name_text: str,
+    name_size: int,
+    date_text: str,
+    date_size: int,
+) -> dict[str, object]:
+    """Return font metrics for the name line and optional date line."""
+    lines: list[dict[str, object]] = []
+    for text, size in ((name_text, name_size), (date_text, date_size)):
+        if not text:
+            continue
+        font = load_font(family, size)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        x0, y0 = bbox[0], bbox[1]
+        lines.append(
+            {
+                "text": text,
+                "font": font,
+                "x0": x0,
+                "y0": y0,
+                "width": bbox[2] - x0,
+                "height": bbox[3] - y0,
+            }
+        )
+
+    gap = max(2, int(name_size * 0.18)) if len(lines) == 2 else 0
+    width = max((int(line["width"]) for line in lines), default=0)
+    height = sum(int(line["height"]) for line in lines) + gap
+    return {"lines": lines, "gap": gap, "width": width, "height": height}
+
+
+def _fit_font_sizes(
+    draw: ImageDraw.ImageDraw,
+    family: str,
+    text: str,
+    date_text: str,
+    name_size: int,
+    date_size: int,
+    band_w: int,
+    band_h: int,
+) -> tuple[int, int]:
+    """Shrink manual font sizes if they would overflow the band."""
+    available_w = int(band_w * 0.92)
+    available_h = int(band_h * 0.9)
+
+    while name_size > 8 or date_size > 8:
+        layout = _measure_lines(draw, family, text, name_size, date_text, date_size)
+        if int(layout["width"]) <= available_w and int(layout["height"]) <= available_h:
+            break
+        name_size = max(8, name_size - 1)
+        date_size = max(8, date_size - 1)
+    return name_size, date_size
+
+
 # ---------------------------------------------------------------------------
 # Core stamping
 # ---------------------------------------------------------------------------
 
-def stamp_image(image: Image.Image, text: str, settings: StampSettings) -> Image.Image:
+def stamp_image(
+    image: Image.Image,
+    text: str,
+    settings: StampSettings,
+    *,
+    date_text: str = "",
+) -> Image.Image:
     """Return a stamped copy of *image*; the original is never modified."""
     img = image.copy()
 
+    date_text = date_text.strip()
     if not settings.band_enabled or not text.strip():
         return img
 
@@ -93,35 +156,61 @@ def stamp_image(image: Image.Image, text: str, settings: StampSettings) -> Image
     font_size = settings.font_size
     if font_size is None:
         font_size = _auto_font_size(
-            text_area_h, text_area_w, text, settings.font_family
+            text_area_h, text_area_w, text, settings.font_family, date_text
         )
 
-    font = load_font(settings.font_family, font_size)
+    date_font_size = settings.date_font_size or max(8, int(font_size * 0.8))
 
     # --- Measure text precisely ---
-    # textbbox returns (x0, y0, x1, y1) relative to the anchor (0, 0).
-    # x0 / y0 are non-zero when the font has a left or top bearing (common in
-    # TrueType fonts). Accounting for these offsets is necessary for accurate
-    # centering; ignoring them causes text to drift slightly off-center.
+    # textbbox returns offsets relative to the anchor. Accounting for x0/y0 is
+    # necessary for accurate centering with TrueType fonts.
     draw = ImageDraw.Draw(img_rgba)
-    bbox = draw.textbbox((0, 0), text, font=font)
-    x0, y0 = bbox[0], bbox[1]
-    text_w = bbox[2] - x0
-    text_h = bbox[3] - y0
+    font_size, date_font_size = _fit_font_sizes(
+        draw,
+        settings.font_family,
+        text,
+        date_text,
+        font_size,
+        date_font_size,
+        text_area_w,
+        text_area_h,
+    )
+    layout = _measure_lines(
+        draw,
+        settings.font_family,
+        text,
+        font_size,
+        date_text,
+        date_font_size,
+    )
+    lines = layout["lines"]
+    gap = int(layout["gap"])
+    total_h = int(layout["height"])
 
     # --- Horizontal position ---
     padding = max(8, int(text_area_w * 0.02))
-    if settings.text_alignment == TextAlignment.LEFT:
-        tx = bx1 + padding - x0
-    elif settings.text_alignment == TextAlignment.RIGHT:
-        tx = bx1 + text_area_w - text_w - padding - x0
-    else:  # CENTER
-        tx = bx1 + (text_area_w - text_w) // 2 - x0
+    y = by1 + (text_area_h - total_h) // 2
 
-    # --- Vertical position: center in band ---
-    ty = by1 + (text_area_h - text_h) // 2 - y0
+    for index, line in enumerate(lines):
+        line_w = int(line["width"])
+        line_h = int(line["height"])
+        x0 = int(line["x0"])
+        y0 = int(line["y0"])
 
-    draw.text((tx, ty), text, font=font, fill=(*settings.text_color, 255))
+        if settings.text_alignment == TextAlignment.LEFT:
+            tx = bx1 + padding - x0
+        elif settings.text_alignment == TextAlignment.RIGHT:
+            tx = bx1 + text_area_w - line_w - padding - x0
+        else:  # CENTER
+            tx = bx1 + (text_area_w - line_w) // 2 - x0
+
+        color = (
+            settings.date_color
+            if index == 1 and settings.date_color is not None
+            else settings.text_color
+        )
+        draw.text((tx, y - y0), str(line["text"]), font=line["font"], fill=(*color, 255))
+        y += line_h + gap
 
     # --- Restore original color mode ---
     if original_mode == "RGB":

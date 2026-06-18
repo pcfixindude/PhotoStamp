@@ -11,8 +11,14 @@ from typing import Optional
 from PIL import Image
 
 from photostamp.batch import BatchResult, iter_images, process_folder
-from photostamp.config import BandPosition, StampSettings, TextAlignment
-from photostamp.filename import stamp_text_from_filename
+from photostamp.config import (
+    BandPosition,
+    DateDisplayFormat,
+    DateSource,
+    StampSettings,
+    TextAlignment,
+)
+from photostamp.date_utils import resolve_stamp_text
 from photostamp.fonts import list_available_fonts
 from photostamp.gui.preview import PreviewPanel
 from photostamp.settings_store import UserSettings, load_settings, save_settings
@@ -28,6 +34,26 @@ from photostamp.stamping import stamp_image
 _AVAILABLE_FONTS: list[str] = list_available_fonts()
 
 CONTROLS_WIDTH = 300  # pixels
+
+DATE_SOURCE_LABELS = {
+    "No date line": DateSource.NONE.value,
+    "Auto-detect per image": DateSource.AUTO.value,
+    "Use one batch date": DateSource.BATCH.value,
+    "Manually assign per image": DateSource.MANUAL.value,
+    "Extract date from filename": DateSource.FILENAME.value,
+}
+DATE_SOURCE_VALUES = {v: k for k, v in DATE_SOURCE_LABELS.items()}
+
+DATE_FORMAT_LABELS = {
+    "January 31, 2026": DateDisplayFormat.LONG.value,
+    "Jan 31, 2026": DateDisplayFormat.SHORT_MONTH.value,
+    "01/31/2026": DateDisplayFormat.NUMERIC.value,
+    "1/31/26": DateDisplayFormat.NUMERIC_SHORT.value,
+    "2026-01-31": DateDisplayFormat.ISO.value,
+    "31 Jan 2026": DateDisplayFormat.DAY_MONTH.value,
+    "Custom format": DateDisplayFormat.CUSTOM.value,
+}
+DATE_FORMAT_VALUES = {v: k for k, v in DATE_FORMAT_LABELS.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +90,10 @@ class PhotoStampApp(tk.Tk):
         self._input_folder: Optional[Path] = None
         self._output_folder: Optional[Path] = None
         self._queue: queue.Queue = queue.Queue()
+        self._preview_images: list[Path] = []
+        self._preview_index = 0
+        self._manual_dates: dict[str, str] = {}
+        self._loading_manual_date = False
 
         self._init_vars()
         self._build_ui()
@@ -90,6 +120,20 @@ class PhotoStampApp(tk.Tk):
         self._font_size = tk.IntVar(value=32)
         self._text_color = tk.StringVar(value="#000000")
         self._text_align = tk.StringVar(value="center")
+
+        # Optional date line settings
+        self._date_line_enabled = tk.BooleanVar(value=False)
+        self._date_source = tk.StringVar(value=DATE_SOURCE_VALUES[DateSource.NONE.value])
+        self._batch_date = tk.StringVar(value="")
+        self._date_display_format = tk.StringVar(
+            value=DATE_FORMAT_VALUES[DateDisplayFormat.LONG.value]
+        )
+        self._custom_date_format = tk.StringVar(value="%B %d, %Y")
+        self._remove_detected_date = tk.BooleanVar(value=True)
+        self._date_font_size_auto = tk.BooleanVar(value=True)
+        self._date_font_size = tk.IntVar(value=24)
+        self._date_color = tk.StringVar(value="#000000")
+        self._manual_date = tk.StringVar(value="")
 
         # Band settings
         self._band_enabled = tk.BooleanVar(value=True)
@@ -141,6 +185,7 @@ class PhotoStampApp(tk.Tk):
         sections = [
             ("Folders", self._build_folder_section),
             ("Text",    self._build_text_section),
+            ("Date Line", self._build_date_section),
             ("Band",    self._build_band_section),
         ]
         for row, (label, builder) in enumerate(sections):
@@ -245,6 +290,101 @@ class PhotoStampApp(tk.Tk):
                 align_frame, text=lbl, variable=self._text_align, value=val,
             ).pack(side="left")
 
+    def _build_date_section(self, parent: ttk.Frame) -> None:
+        r = 0
+        ttk.Checkbutton(
+            parent,
+            text="Enable date line",
+            variable=self._date_line_enabled,
+            command=self._sync_date_controls,
+        ).grid(row=r, column=0, columnspan=2, sticky="w")
+        r += 1
+
+        ttk.Label(parent, text="Source:").grid(row=r, column=0, sticky="w", pady=(6, 0))
+        self._date_source_combo = ttk.Combobox(
+            parent,
+            textvariable=self._date_source,
+            values=list(DATE_SOURCE_LABELS.keys()),
+            state="readonly",
+            width=18,
+        )
+        self._date_source_combo.grid(row=r, column=1, sticky="ew", pady=(6, 0))
+        self._date_source_combo.bind("<<ComboboxSelected>>", lambda _e: self._sync_date_controls())
+        r += 1
+
+        ttk.Label(parent, text="Batch date:").grid(row=r, column=0, sticky="w", pady=(6, 0))
+        self._batch_date_entry = ttk.Entry(parent, textvariable=self._batch_date, width=18)
+        self._batch_date_entry.grid(row=r, column=1, sticky="ew", pady=(6, 0))
+        r += 1
+
+        ttk.Label(parent, text="Format:").grid(row=r, column=0, sticky="w", pady=(6, 0))
+        self._date_format_combo = ttk.Combobox(
+            parent,
+            textvariable=self._date_display_format,
+            values=list(DATE_FORMAT_LABELS.keys()),
+            state="readonly",
+            width=18,
+        )
+        self._date_format_combo.grid(row=r, column=1, sticky="ew", pady=(6, 0))
+        self._date_format_combo.bind("<<ComboboxSelected>>", lambda _e: self._sync_date_controls())
+        r += 1
+
+        ttk.Label(parent, text="Custom:").grid(row=r, column=0, sticky="w", pady=(6, 0))
+        self._custom_date_entry = ttk.Entry(
+            parent, textvariable=self._custom_date_format, width=18
+        )
+        self._custom_date_entry.grid(row=r, column=1, sticky="ew", pady=(6, 0))
+        r += 1
+
+        ttk.Checkbutton(
+            parent,
+            text="Remove detected date from name",
+            variable=self._remove_detected_date,
+        ).grid(row=r, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        r += 1
+
+        date_size_row = ttk.Frame(parent)
+        date_size_row.grid(row=r, column=0, columnspan=2, sticky="w", pady=(6, 0))
+        ttk.Label(date_size_row, text="Date size:").pack(side="left")
+        ttk.Checkbutton(
+            date_size_row,
+            text="Auto",
+            variable=self._date_font_size_auto,
+            command=self._sync_date_controls,
+        ).pack(side="left", padx=(6, 0))
+        self._date_size_spin = ttk.Spinbox(
+            date_size_row,
+            from_=6,
+            to=300,
+            textvariable=self._date_font_size,
+            width=5,
+        )
+        self._date_size_spin.pack(side="left", padx=(6, 0))
+        r += 1
+
+        ttk.Label(parent, text="Date color:").grid(row=r, column=0, sticky="w", pady=(6, 0))
+        _make_color_row(
+            parent, self._date_color, "Date Text Color", self,
+        ).grid(row=r, column=1, sticky="w", pady=(6, 0))
+        r += 1
+
+        ttk.Label(parent, text="This image:").grid(row=r, column=0, sticky="w", pady=(6, 0))
+        self._manual_date_entry = ttk.Entry(parent, textvariable=self._manual_date, width=18)
+        self._manual_date_entry.grid(row=r, column=1, sticky="ew", pady=(6, 0))
+        self._manual_date.trace_add("write", self._on_manual_date_changed)
+        r += 1
+
+        nav = ttk.Frame(parent)
+        nav.grid(row=r, column=0, columnspan=2, sticky="ew", pady=(6, 0))
+        nav.columnconfigure(0, weight=1)
+        nav.columnconfigure(1, weight=1)
+        self._prev_btn = ttk.Button(nav, text="Previous", command=self._preview_previous_image)
+        self._prev_btn.grid(row=0, column=0, sticky="ew", padx=(0, 2))
+        self._next_btn = ttk.Button(nav, text="Next", command=self._preview_next_image)
+        self._next_btn.grid(row=0, column=1, sticky="ew", padx=(2, 0))
+
+        self._sync_date_controls()
+
     def _build_band_section(self, parent: ttk.Frame) -> None:
         r = 0
         ttk.Checkbutton(
@@ -322,6 +462,57 @@ class PhotoStampApp(tk.Tk):
     # Settings
     # ------------------------------------------------------------------
 
+    def _date_source_value(self) -> str:
+        return DATE_SOURCE_LABELS.get(self._date_source.get(), DateSource.NONE.value)
+
+    def _date_format_value(self) -> str:
+        return DATE_FORMAT_LABELS.get(
+            self._date_display_format.get(), DateDisplayFormat.LONG.value
+        )
+
+    def _sync_date_controls(self) -> None:
+        """Enable/disable date inputs based on the selected mode."""
+        enabled = self._date_line_enabled.get()
+        source = self._date_source_value()
+        fmt = self._date_format_value()
+
+        if enabled and source == DateSource.NONE.value:
+            self._date_source.set(DATE_SOURCE_VALUES[DateSource.AUTO.value])
+            source = DateSource.AUTO.value
+        elif not enabled:
+            self._date_source.set(DATE_SOURCE_VALUES[DateSource.NONE.value])
+            source = DateSource.NONE.value
+
+        batch_state = "normal" if enabled and source == DateSource.BATCH.value else "disabled"
+        # A manual value for the current preview image overrides any source,
+        # so keep this field available whenever the date line is enabled.
+        manual_state = "normal" if enabled and source != DateSource.NONE.value else "disabled"
+        custom_state = (
+            "normal"
+            if enabled and fmt == DateDisplayFormat.CUSTOM.value
+            else "disabled"
+        )
+        date_size_state = "disabled" if self._date_font_size_auto.get() else "normal"
+
+        for widget, state in (
+            (getattr(self, "_batch_date_entry", None), batch_state),
+            (getattr(self, "_manual_date_entry", None), manual_state),
+            (getattr(self, "_custom_date_entry", None), custom_state),
+            (getattr(self, "_date_size_spin", None), date_size_state),
+        ):
+            if widget is not None:
+                widget.config(state=state)
+
+    def _on_manual_date_changed(self, *_args: object) -> None:
+        if self._loading_manual_date or not self._preview_images:
+            return
+        current = self._preview_images[self._preview_index]
+        value = self._manual_date.get().strip()
+        if value:
+            self._manual_dates[str(current)] = value
+        else:
+            self._manual_dates.pop(str(current), None)
+
     def _collect_user_settings(self) -> UserSettings:
         """Snapshot current UI state for persistence."""
         return UserSettings(
@@ -333,6 +524,15 @@ class PhotoStampApp(tk.Tk):
             font_size=self._font_size.get(),
             text_color=self._text_color.get(),
             text_alignment=self._text_align.get(),
+            enable_date_line=self._date_line_enabled.get(),
+            date_source=self._date_source_value(),
+            batch_date=self._batch_date.get(),
+            date_display_format=self._date_format_value(),
+            custom_date_format=self._custom_date_format.get(),
+            remove_detected_date=self._remove_detected_date.get(),
+            date_font_size_auto=self._date_font_size_auto.get(),
+            date_font_size=self._date_font_size.get(),
+            date_color=self._date_color.get(),
             band_enabled=self._band_enabled.get(),
             band_position=self._band_position.get(),
             band_size=self._band_size.get(),
@@ -362,6 +562,17 @@ class PhotoStampApp(tk.Tk):
         self._font_size.set(saved.font_size)
         self._text_color.set(saved.text_color)
         self._text_align.set(saved.text_alignment)
+        self._date_line_enabled.set(saved.enable_date_line)
+        self._date_source.set(DATE_SOURCE_VALUES.get(saved.date_source, "No date line"))
+        self._batch_date.set(saved.batch_date)
+        self._date_display_format.set(
+            DATE_FORMAT_VALUES.get(saved.date_display_format, "January 31, 2026")
+        )
+        self._custom_date_format.set(saved.custom_date_format)
+        self._remove_detected_date.set(saved.remove_detected_date)
+        self._date_font_size_auto.set(saved.date_font_size_auto)
+        self._date_font_size.set(saved.date_font_size)
+        self._date_color.set(saved.date_color)
         self._band_enabled.set(saved.band_enabled)
         self._band_position.set(saved.band_position)
         self._band_size.set(saved.band_size)
@@ -373,6 +584,8 @@ class PhotoStampApp(tk.Tk):
             self._band_size_lbl.config(text=f"{saved.band_size}%")
         if hasattr(self, "_opacity_lbl"):
             self._opacity_lbl.config(text=f"{saved.band_opacity}%")
+        if hasattr(self, "_date_size_spin"):
+            self._sync_date_controls()
 
     def _load_saved_settings(self) -> None:
         """Load preferences from settings.json, using defaults on any error."""
@@ -395,6 +608,16 @@ class PhotoStampApp(tk.Tk):
             text_color=_hex_to_rgb(self._text_color.get()),
             text_alignment=TextAlignment(self._text_align.get()),
             title_case=self._title_case.get(),
+            enable_date_line=self._date_line_enabled.get(),
+            date_source=DateSource(self._date_source_value()),
+            batch_date=self._batch_date.get(),
+            date_display_format=DateDisplayFormat(self._date_format_value()),
+            custom_date_format=self._custom_date_format.get(),
+            remove_detected_date=self._remove_detected_date.get(),
+            date_font_size=None
+            if self._date_font_size_auto.get()
+            else self._date_font_size.get(),
+            date_color=_hex_to_rgb(self._date_color.get()),
             band_enabled=self._band_enabled.get(),
             band_position=BandPosition(self._band_position.get()),
             band_size_ratio=self._band_size.get() / 100,
@@ -411,6 +634,8 @@ class PhotoStampApp(tk.Tk):
         if folder:
             self._input_folder = Path(folder)
             self._input_display.set(_short_path(self._input_folder))
+            self._preview_images = []
+            self._preview_index = 0
             self._status_var.set("Input folder selected.")
 
     def _browse_output(self) -> None:
@@ -428,32 +653,66 @@ class PhotoStampApp(tk.Tk):
     # ------------------------------------------------------------------
 
     def _preview_first_image(self) -> None:
+        if self._load_preview_images():
+            self._preview_index = 0
+            self._show_current_preview()
+
+    def _preview_previous_image(self) -> None:
+        if not self._load_preview_images():
+            return
+        self._preview_index = max(0, self._preview_index - 1)
+        self._show_current_preview()
+
+    def _preview_next_image(self) -> None:
+        if not self._load_preview_images():
+            return
+        self._preview_index = min(len(self._preview_images) - 1, self._preview_index + 1)
+        self._show_current_preview()
+
+    def _load_preview_images(self) -> bool:
         if not self._input_folder or not self._input_folder.is_dir():
             messagebox.showwarning(
                 "No Input Folder", "Please select an input folder first.", parent=self
             )
-            return
+            return False
 
-        images = list(iter_images(self._input_folder))
-        if not images:
+        self._preview_images = list(iter_images(self._input_folder))
+        if not self._preview_images:
             messagebox.showinfo(
                 "No Images",
                 "No supported images were found in the selected folder.",
                 parent=self,
             )
-            return
+            return False
 
-        first = images[0]
+        self._preview_index = min(self._preview_index, len(self._preview_images) - 1)
+        return True
+
+    def _show_current_preview(self) -> None:
+        current = self._preview_images[self._preview_index]
+        self._loading_manual_date = True
+        self._manual_date.set(self._manual_dates.get(str(current), ""))
+        self._loading_manual_date = False
         settings = self._get_settings()
 
         try:
-            with Image.open(first) as img:
+            with Image.open(current) as img:
                 img.load()
-                text = stamp_text_from_filename(first.name, title_case=settings.title_case)
-                stamped = stamp_image(img, text, settings)
+                stamp_text = resolve_stamp_text(
+                    current, img, settings, manual_dates=self._manual_dates
+                )
+                stamped = stamp_image(
+                    img,
+                    stamp_text.name,
+                    settings,
+                    date_text=stamp_text.date_text,
+                )
 
             self._preview_panel.show(stamped)
-            self._status_var.set(f"Preview: {first.name}")
+            status = f"Preview {self._preview_index + 1}/{len(self._preview_images)}: {current.name}"
+            if stamp_text.warning:
+                status += f" ({stamp_text.warning})"
+            self._status_var.set(status)
         except Exception as exc:
             messagebox.showerror("Preview Error", str(exc), parent=self)
 
@@ -485,6 +744,7 @@ class PhotoStampApp(tk.Tk):
         settings = self._get_settings()
         input_folder = self._input_folder
         output_folder = self._output_folder
+        manual_dates = dict(self._manual_dates)
 
         def worker() -> None:
             def on_progress(current: int, total: int, message: str) -> None:
@@ -492,7 +752,11 @@ class PhotoStampApp(tk.Tk):
                 self._queue.put(("progress", pct, message))
 
             result = process_folder(
-                input_folder, output_folder, settings, on_progress=on_progress
+                input_folder,
+                output_folder,
+                settings,
+                manual_dates=manual_dates,
+                on_progress=on_progress,
             )
             self._queue.put(("done", result))
 
@@ -524,15 +788,18 @@ class PhotoStampApp(tk.Tk):
         summary = f"Done — {result.processed} photo(s) stamped."
         if result.errors:
             summary += f"  {len(result.errors)} error(s)."
+        if result.warnings:
+            summary += f"  {len(result.warnings)} warning(s)."
         self._status_var.set(summary)
 
-        if result.errors:
-            error_text = "\n".join(result.errors[:10])
-            if len(result.errors) > 10:
-                error_text += f"\n…and {len(result.errors) - 10} more."
+        if result.errors or result.warnings:
+            issues = result.errors + result.warnings
+            error_text = "\n".join(issues[:10])
+            if len(issues) > 10:
+                error_text += f"\n…and {len(issues) - 10} more."
             messagebox.showwarning(
-                "Completed with Errors",
-                f"{result.processed} photo(s) stamped.\n\nErrors:\n{error_text}",
+                "Completed with Notes",
+                f"{result.processed} photo(s) stamped.\n\nNotes:\n{error_text}",
                 parent=self,
             )
         else:

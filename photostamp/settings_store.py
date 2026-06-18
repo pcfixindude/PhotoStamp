@@ -11,7 +11,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from photostamp.config import DEFAULT_FONT_FAMILY
+from photostamp.config import DEFAULT_FONT_FAMILY, DateDisplayFormat, DateSource
 
 
 def _settings_dir() -> Path:
@@ -30,6 +30,8 @@ _SETTINGS_PATH = _settings_dir() / "settings.json"
 
 _VALID_ALIGNMENTS = {"left", "center", "right"}
 _VALID_BAND_POSITIONS = {"top", "bottom", "left", "right"}
+_VALID_DATE_SOURCES = {item.value for item in DateSource}
+_VALID_DATE_FORMATS = {item.value for item in DateDisplayFormat}
 
 
 @dataclass
@@ -44,6 +46,15 @@ class UserSettings:
     font_size: int = 32
     text_color: str = "#000000"
     text_alignment: str = "center"
+    enable_date_line: bool = False
+    date_source: str = DateSource.NONE.value
+    batch_date: str = ""
+    date_display_format: str = DateDisplayFormat.LONG.value
+    custom_date_format: str = "%B %d, %Y"
+    remove_detected_date: bool = True
+    date_font_size_auto: bool = True
+    date_font_size: int = 24
+    date_color: str = "#000000"
     band_enabled: bool = True
     band_position: str = "bottom"
     band_size: int = 15
@@ -101,6 +112,29 @@ def _parse_settings(raw: dict[str, Any], defaults: UserSettings) -> UserSettings
         text_alignment=_choice(
             raw.get("text_alignment"), _VALID_ALIGNMENTS, defaults.text_alignment
         ),
+        enable_date_line=_bool(raw.get("enable_date_line"), defaults.enable_date_line),
+        date_source=_choice(
+            raw.get("date_source"), _VALID_DATE_SOURCES, defaults.date_source
+        ),
+        batch_date=_str_allow_blank(raw.get("batch_date"), defaults.batch_date),
+        date_display_format=_choice(
+            raw.get("date_display_format"),
+            _VALID_DATE_FORMATS,
+            defaults.date_display_format,
+        ),
+        custom_date_format=_str(
+            raw.get("custom_date_format"), defaults.custom_date_format
+        ),
+        remove_detected_date=_bool(
+            raw.get("remove_detected_date"), defaults.remove_detected_date
+        ),
+        date_font_size_auto=_bool(
+            raw.get("date_font_size_auto"), defaults.date_font_size_auto
+        ),
+        date_font_size=_int_in_range(
+            raw.get("date_font_size"), 6, 300, defaults.date_font_size
+        ),
+        date_color=_hex_color(raw.get("date_color"), defaults.date_color),
         band_enabled=_bool(raw.get("band_enabled"), defaults.band_enabled),
         band_position=_choice(
             raw.get("band_position"), _VALID_BAND_POSITIONS, defaults.band_position
@@ -124,6 +158,10 @@ def _bool(value: Any, default: bool) -> bool:
 
 def _str(value: Any, default: str) -> str:
     return value if isinstance(value, str) and value.strip() else default
+
+
+def _str_allow_blank(value: Any, default: str) -> str:
+    return value if isinstance(value, str) else default
 
 
 def _int_in_range(value: Any, lo: int, hi: int, default: int) -> int:

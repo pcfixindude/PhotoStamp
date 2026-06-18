@@ -7,7 +7,7 @@ from typing import Callable, Iterator, Optional
 from PIL import Image
 
 from photostamp.config import DEFAULT_OUTPUT_FOLDER_NAME, SUPPORTED_EXTENSIONS, StampSettings
-from photostamp.filename import stamp_text_from_filename
+from photostamp.date_utils import resolve_stamp_text
 from photostamp.stamping import save_stamped_image, stamp_image
 
 
@@ -18,6 +18,7 @@ class BatchResult:
     processed: int = 0
     skipped: int = 0
     errors: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 def iter_images(folder: Path) -> Iterator[Path]:
@@ -42,6 +43,7 @@ def process_folder(
     output_folder: Optional[Path],
     settings: StampSettings,
     *,
+    manual_dates: Optional[dict[str, str]] = None,
     on_progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> BatchResult:
     """Stamp every supported image in *input_folder* and save copies to *output_folder*.
@@ -66,10 +68,17 @@ def process_folder(
         try:
             with Image.open(img_path) as img:
                 img.load()  # force full decode while file is open
-                text = stamp_text_from_filename(
-                    img_path.name, title_case=settings.title_case
+                stamp_text = resolve_stamp_text(
+                    img_path, img, settings, manual_dates=manual_dates
                 )
-                stamped = stamp_image(img, text, settings)
+                if stamp_text.warning:
+                    result.warnings.append(stamp_text.warning)
+                stamped = stamp_image(
+                    img,
+                    stamp_text.name,
+                    settings,
+                    date_text=stamp_text.date_text,
+                )
 
             save_stamped_image(stamped, out_dir / img_path.name)
             result.processed += 1
@@ -81,6 +90,8 @@ def process_folder(
         summary = f"Done — {result.processed} stamped"
         if result.errors:
             summary += f", {len(result.errors)} error(s)"
+        if result.warnings:
+            summary += f", {len(result.warnings)} warning(s)"
         on_progress(total, total, summary)
 
     return result

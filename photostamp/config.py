@@ -18,6 +18,24 @@ class TextAlignment(Enum):
     RIGHT = "right"
 
 
+class DateSource(Enum):
+    AUTO = "auto"
+    BATCH = "batch"
+    MANUAL = "manual"
+    FILENAME = "filename"
+    NONE = "none"
+
+
+class DateDisplayFormat(Enum):
+    LONG = "long"
+    SHORT_MONTH = "short_month"
+    NUMERIC = "numeric"
+    NUMERIC_SHORT = "numeric_short"
+    ISO = "iso"
+    DAY_MONTH = "day_month"
+    CUSTOM = "custom"
+
+
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 DEFAULT_OUTPUT_FOLDER_NAME = "PhotoStamp Output"
 DEFAULT_FONT_FAMILY = "Arial"
@@ -33,6 +51,16 @@ class StampSettings:
     text_color: Tuple[int, int, int] = (0, 0, 0)
     text_alignment: TextAlignment = TextAlignment.CENTER
     title_case: bool = False
+
+    # Optional second line
+    enable_date_line: bool = False
+    date_source: DateSource = DateSource.NONE
+    batch_date: str = ""
+    date_display_format: DateDisplayFormat = DateDisplayFormat.LONG
+    custom_date_format: str = "%B %d, %Y"
+    remove_detected_date: bool = True
+    date_font_size: int | None = None  # None = 80% of name font size
+    date_color: Tuple[int, int, int] | None = None  # None = text_color
 
     # Band
     band_enabled: bool = True

@@ -94,7 +94,7 @@ PhotoStamp remembers your preferences in a local `settings.json` file.
 
 Settings are loaded when the app starts and saved when you close the app or finish a batch stamp.
 
-Saved items include last input/output folders, title-case preference, font, text options, and band options. Image data is never stored.
+Saved items include last input/output folders, title-case preference, font, text options, date-line options, and band options. Image data is never stored.
 
 If `settings.json` is missing or corrupted, the app falls back to defaults and continues normally. The file is listed in `.gitignore` so it is not committed to Git.
 
@@ -128,6 +128,72 @@ Examples:
 | `emma_johnson.jpg` | `emma johnson` | `Emma Johnson` |
 | `product-123-blue.png` | `product 123 blue` | `Product 123 Blue` |
 | `IMG_0042.jpeg` | `IMG 0042` | `Img 0042` |
+
+### Optional date line
+
+PhotoStamp can add a second line under the name with the date the picture was taken.
+
+In the **Date Line** section:
+
+1. Check **Enable date line**.
+2. Choose a **Source**.
+3. Choose a **Format**.
+4. Click **Preview First Image** to confirm the layout before stamping.
+
+The date line uses the same font family by default, with an automatically smaller size. You can set a separate date font size and date color if needed. Automatic sizing shrinks both lines so they fit inside the existing band when possible.
+
+#### Date sources
+
+| Source | What it does |
+|---|---|
+| Auto-detect per image | Reads EXIF `DateTimeOriginal`, then EXIF `DateTimeDigitized`; falls back to file created timestamp when available, then modified timestamp |
+| Use one batch date | Uses the same date for every photo |
+| Manually assign per image | Uses the editable **This image** date field while previewing; use Previous / Next to move through images |
+| Extract date from filename | Detects a date at the end of the filename and uses it as the date line |
+| No date line | Disables the second line |
+
+File created timestamps are not always the true photo-taken date. They can change when photos are copied, downloaded, exported, or synced. EXIF dates are preferred when available.
+
+#### Batch/manual date entry
+
+The batch date and manual per-image date fields accept common formats such as:
+
+- `01/31/2026`
+- `2026-01-31`
+- `Jan 31, 2026`
+- `January 31, 2026`
+
+Manual per-image dates are stored in memory for the current app session and are not written to `settings.json`.
+
+#### Filename date examples
+
+When **Extract date from filename** is selected, PhotoStamp looks for conservative date patterns at the end of the name:
+
+| Filename | Name line | Date line |
+|---|---|---|
+| `Joe Smith 013126.jpg` | `Joe Smith` | `January 31, 2026` |
+| `Joe Smith 01-31-26.jpg` | `Joe Smith` | `January 31, 2026` |
+| `Joe Smith 01_31_2026.jpg` | `Joe Smith` | `January 31, 2026` |
+| `Joe Smith 2026-01-31.jpg` | `Joe Smith` | `January 31, 2026` |
+| `Joe Smith 20260131.jpg` | `Joe Smith` | `January 31, 2026` |
+| `Joe Smith Jan 31 2026.jpg` | `Joe Smith` | `January 31, 2026` |
+| `Joe Smith January 31, 2026.jpg` | `Joe Smith` | `January 31, 2026` |
+
+The option **Remove detected date from displayed name** is on by default. Two-digit years use this cutoff: `00`-`69` means `2000`-`2069`, and `70`-`99` means `1970`-`1999`.
+
+#### Date display formats
+
+Available date display formats:
+
+- `January 31, 2026`
+- `Jan 31, 2026`
+- `01/31/2026`
+- `1/31/26`
+- `2026-01-31`
+- `31 Jan 2026`
+- Custom Python `strftime` format, such as `%B %d, %Y`, `%m/%d/%Y`, or `%Y-%m-%d`
+
+If the custom format is blank or invalid, PhotoStamp falls back to `January 31, 2026`.
 
 ### Supported formats
 
@@ -272,6 +338,7 @@ PhotoStamp/
 ├── photostamp/
 │   ├── config.py              # StampSettings dataclass + enums + defaults
 │   ├── filename.py            # Filename → stamp text
+│   ├── date_utils.py          # Date detection, parsing, and formatting
 │   ├── fonts.py               # Cross-platform font discovery
 │   ├── stamping.py            # Pillow: draw band + text, save
 │   ├── batch.py               # Folder scan + batch loop
