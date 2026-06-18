@@ -36,6 +36,21 @@ class DateDisplayFormat(Enum):
     CUSTOM = "custom"
 
 
+class ExportSizeMode(Enum):
+    ORIGINAL = "original"
+    WIDTH = "width"
+    HEIGHT = "height"
+    FIT_BOX = "fit_box"
+    EXACT = "exact"
+
+
+class ExportFileType(Enum):
+    ORIGINAL = "original"
+    JPEG = "jpeg"
+    PNG = "png"
+    WEBP = "webp"
+
+
 SUPPORTED_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 DEFAULT_OUTPUT_FOLDER_NAME = "PhotoStamp Output"
 DEFAULT_FONT_FAMILY = "Arial"
@@ -62,9 +77,16 @@ class StampSettings:
     date_font_size: int | None = None  # None = 80% of name font size
     date_color: Tuple[int, int, int] | None = None  # None = text_color
 
-    # Band
-    band_enabled: bool = True
+    # Stamp area / background band. The area controls placement even when the
+    # background rectangle is hidden.
+    show_background_band: bool = True
     band_position: BandPosition = BandPosition.BOTTOM
     band_size_ratio: float = 0.15  # fraction of image dimension along band axis
     band_color: Tuple[int, int, int] = (255, 255, 255)
     band_opacity: float = 1.0  # 0.0 = transparent, 1.0 = opaque
+
+    # Export
+    export_size_mode: ExportSizeMode = ExportSizeMode.ORIGINAL
+    export_width: int = 1600
+    export_height: int = 1200
+    export_file_type: ExportFileType = ExportFileType.ORIGINAL

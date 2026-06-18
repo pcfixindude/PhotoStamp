@@ -15,10 +15,13 @@ from photostamp.config import (
     BandPosition,
     DateDisplayFormat,
     DateSource,
+    ExportFileType,
+    ExportSizeMode,
     StampSettings,
     TextAlignment,
 )
 from photostamp.date_utils import resolve_stamp_text
+from photostamp.exporting import prepare_for_export
 from photostamp.fonts import list_available_fonts
 from photostamp.gui.preview import PreviewPanel
 from photostamp.settings_store import UserSettings, load_settings, save_settings
@@ -54,6 +57,23 @@ DATE_FORMAT_LABELS = {
     "Custom format": DateDisplayFormat.CUSTOM.value,
 }
 DATE_FORMAT_VALUES = {v: k for k, v in DATE_FORMAT_LABELS.items()}
+
+EXPORT_SIZE_LABELS = {
+    "Original size": ExportSizeMode.ORIGINAL.value,
+    "Resize by width": ExportSizeMode.WIDTH.value,
+    "Resize by height": ExportSizeMode.HEIGHT.value,
+    "Fit within box": ExportSizeMode.FIT_BOX.value,
+    "Custom width x height (may distort)": ExportSizeMode.EXACT.value,
+}
+EXPORT_SIZE_VALUES = {v: k for k, v in EXPORT_SIZE_LABELS.items()}
+
+EXPORT_TYPE_LABELS = {
+    "Original format": ExportFileType.ORIGINAL.value,
+    "JPEG": ExportFileType.JPEG.value,
+    "PNG": ExportFileType.PNG.value,
+    "WEBP": ExportFileType.WEBP.value,
+}
+EXPORT_TYPE_VALUES = {v: k for k, v in EXPORT_TYPE_LABELS.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -92,8 +112,8 @@ class PhotoStampApp(tk.Tk):
         self._queue: queue.Queue = queue.Queue()
         self._preview_images: list[Path] = []
         self._preview_index = 0
-        self._manual_dates: dict[str, str] = {}
-        self._loading_manual_date = False
+        self._manual_overrides: dict[str, dict[str, object]] = {}
+        self._loading_manual_fields = False
 
         self._init_vars()
         self._build_ui()
@@ -133,14 +153,25 @@ class PhotoStampApp(tk.Tk):
         self._date_font_size_auto = tk.BooleanVar(value=True)
         self._date_font_size = tk.IntVar(value=24)
         self._date_color = tk.StringVar(value="#000000")
-        self._manual_date = tk.StringVar(value="")
+        self._manual_name = tk.StringVar(value="")
+        self._manual_second_line = tk.StringVar(value="")
 
         # Band settings
-        self._band_enabled = tk.BooleanVar(value=True)
+        self._show_background_band = tk.BooleanVar(value=True)
         self._band_position = tk.StringVar(value="bottom")
         self._band_size = tk.IntVar(value=15)
         self._band_color = tk.StringVar(value="#ffffff")
         self._band_opacity = tk.IntVar(value=100)
+
+        # Export settings
+        self._export_size_mode = tk.StringVar(
+            value=EXPORT_SIZE_VALUES[ExportSizeMode.ORIGINAL.value]
+        )
+        self._export_width = tk.IntVar(value=1600)
+        self._export_height = tk.IntVar(value=1200)
+        self._export_file_type = tk.StringVar(
+            value=EXPORT_TYPE_VALUES[ExportFileType.ORIGINAL.value]
+        )
 
         # Status / progress
         self._status_var = tk.StringVar(value="Ready.")
@@ -186,7 +217,8 @@ class PhotoStampApp(tk.Tk):
             ("Folders", self._build_folder_section),
             ("Text",    self._build_text_section),
             ("Date Line", self._build_date_section),
-            ("Band",    self._build_band_section),
+            ("Stamp Area / Background Band", self._build_band_section),
+            ("Export Settings", self._build_export_section),
         ]
         for row, (label, builder) in enumerate(sections):
             frame = ttk.LabelFrame(inner, text=label, padding=8)
@@ -368,10 +400,24 @@ class PhotoStampApp(tk.Tk):
         ).grid(row=r, column=1, sticky="w", pady=(6, 0))
         r += 1
 
-        ttk.Label(parent, text="This image:").grid(row=r, column=0, sticky="w", pady=(6, 0))
-        self._manual_date_entry = ttk.Entry(parent, textvariable=self._manual_date, width=18)
-        self._manual_date_entry.grid(row=r, column=1, sticky="ew", pady=(6, 0))
-        self._manual_date.trace_add("write", self._on_manual_date_changed)
+        ttk.Label(parent, text="Name for this image:").grid(
+            row=r, column=0, sticky="w", pady=(6, 0)
+        )
+        self._manual_name_entry = ttk.Entry(
+            parent, textvariable=self._manual_name, width=18
+        )
+        self._manual_name_entry.grid(row=r, column=1, sticky="ew", pady=(6, 0))
+        self._manual_name.trace_add("write", self._on_manual_name_changed)
+        r += 1
+
+        ttk.Label(parent, text="Second line / Date:").grid(
+            row=r, column=0, sticky="w", pady=(6, 0)
+        )
+        self._manual_second_entry = ttk.Entry(
+            parent, textvariable=self._manual_second_line, width=18
+        )
+        self._manual_second_entry.grid(row=r, column=1, sticky="ew", pady=(6, 0))
+        self._manual_second_line.trace_add("write", self._on_manual_second_line_changed)
         r += 1
 
         nav = ttk.Frame(parent)
@@ -388,7 +434,7 @@ class PhotoStampApp(tk.Tk):
     def _build_band_section(self, parent: ttk.Frame) -> None:
         r = 0
         ttk.Checkbutton(
-            parent, text="Band Enabled", variable=self._band_enabled,
+            parent, text="Show background band", variable=self._show_background_band,
         ).grid(row=r, column=0, columnspan=2, sticky="w")
         r += 1
 
@@ -437,6 +483,61 @@ class PhotoStampApp(tk.Tk):
             ),
         ).pack(side="left", fill="x", expand=True)
 
+    def _build_export_section(self, parent: ttk.Frame) -> None:
+        r = 0
+        ttk.Label(parent, text="Size:").grid(row=r, column=0, sticky="w")
+        self._export_size_combo = ttk.Combobox(
+            parent,
+            textvariable=self._export_size_mode,
+            values=list(EXPORT_SIZE_LABELS.keys()),
+            state="readonly",
+            width=22,
+        )
+        self._export_size_combo.grid(row=r, column=1, sticky="ew")
+        self._export_size_combo.bind("<<ComboboxSelected>>", lambda _e: self._sync_export_controls())
+        r += 1
+
+        ttk.Label(parent, text="Width:").grid(row=r, column=0, sticky="w", pady=(6, 0))
+        self._export_width_spin = ttk.Spinbox(
+            parent,
+            from_=1,
+            to=50000,
+            textvariable=self._export_width,
+            width=8,
+        )
+        self._export_width_spin.grid(row=r, column=1, sticky="w", pady=(6, 0))
+        r += 1
+
+        ttk.Label(parent, text="Height:").grid(row=r, column=0, sticky="w", pady=(6, 0))
+        self._export_height_spin = ttk.Spinbox(
+            parent,
+            from_=1,
+            to=50000,
+            textvariable=self._export_height,
+            width=8,
+        )
+        self._export_height_spin.grid(row=r, column=1, sticky="w", pady=(6, 0))
+        r += 1
+
+        ttk.Label(parent, text="File type:").grid(row=r, column=0, sticky="w", pady=(6, 0))
+        ttk.Combobox(
+            parent,
+            textvariable=self._export_file_type,
+            values=list(EXPORT_TYPE_LABELS.keys()),
+            state="readonly",
+            width=14,
+        ).grid(row=r, column=1, sticky="ew", pady=(6, 0))
+        r += 1
+
+        ttk.Label(
+            parent,
+            text="Custom width x height may change aspect ratio.",
+            foreground="gray",
+            wraplength=220,
+        ).grid(row=r, column=0, columnspan=2, sticky="w", pady=(6, 0))
+
+        self._sync_export_controls()
+
     def _build_preview_area(self, parent: ttk.Frame) -> None:
         ttk.Label(
             parent, text="Preview", anchor="center",
@@ -470,6 +571,41 @@ class PhotoStampApp(tk.Tk):
             self._date_display_format.get(), DateDisplayFormat.LONG.value
         )
 
+    def _export_size_value(self) -> str:
+        return EXPORT_SIZE_LABELS.get(
+            self._export_size_mode.get(), ExportSizeMode.ORIGINAL.value
+        )
+
+    def _export_type_value(self) -> str:
+        return EXPORT_TYPE_LABELS.get(
+            self._export_file_type.get(), ExportFileType.ORIGINAL.value
+        )
+
+    def _sync_export_controls(self) -> None:
+        mode = self._export_size_value()
+        width_state = (
+            "normal"
+            if mode in (
+                ExportSizeMode.WIDTH.value,
+                ExportSizeMode.FIT_BOX.value,
+                ExportSizeMode.EXACT.value,
+            )
+            else "disabled"
+        )
+        height_state = (
+            "normal"
+            if mode in (
+                ExportSizeMode.HEIGHT.value,
+                ExportSizeMode.FIT_BOX.value,
+                ExportSizeMode.EXACT.value,
+            )
+            else "disabled"
+        )
+        if hasattr(self, "_export_width_spin"):
+            self._export_width_spin.config(state=width_state)
+        if hasattr(self, "_export_height_spin"):
+            self._export_height_spin.config(state=height_state)
+
     def _sync_date_controls(self) -> None:
         """Enable/disable date inputs based on the selected mode."""
         enabled = self._date_line_enabled.get()
@@ -496,22 +632,57 @@ class PhotoStampApp(tk.Tk):
 
         for widget, state in (
             (getattr(self, "_batch_date_entry", None), batch_state),
-            (getattr(self, "_manual_date_entry", None), manual_state),
+            (getattr(self, "_manual_name_entry", None), "normal"),
+            (getattr(self, "_manual_second_entry", None), manual_state),
             (getattr(self, "_custom_date_entry", None), custom_state),
             (getattr(self, "_date_size_spin", None), date_size_state),
         ):
             if widget is not None:
                 widget.config(state=state)
 
-    def _on_manual_date_changed(self, *_args: object) -> None:
-        if self._loading_manual_date or not self._preview_images:
+    def _override_for_current(self) -> dict[str, object] | None:
+        if not self._preview_images:
+            return None
+        current = self._preview_images[self._preview_index]
+        return self._manual_overrides.setdefault(str(current), {})
+
+    def _cleanup_empty_override(self) -> None:
+        if not self._preview_images:
             return
         current = self._preview_images[self._preview_index]
-        value = self._manual_date.get().strip()
+        override = self._manual_overrides.get(str(current))
+        if override == {}:
+            self._manual_overrides.pop(str(current), None)
+
+    def _on_manual_name_changed(self, *_args: object) -> None:
+        if self._loading_manual_fields or not self._preview_images:
+            return
+        override = self._override_for_current()
+        if override is None:
+            return
+        value = self._manual_name.get().strip()
         if value:
-            self._manual_dates[str(current)] = value
+            override["name_override"] = value
         else:
-            self._manual_dates.pop(str(current), None)
+            # Empty name falls back to the suggested name for safety.
+            override.pop("name_override", None)
+        self._cleanup_empty_override()
+
+    def _on_manual_second_line_changed(self, *_args: object) -> None:
+        if self._loading_manual_fields or not self._preview_images:
+            return
+        override = self._override_for_current()
+        if override is None:
+            return
+        value = self._manual_second_line.get().strip()
+        if value:
+            override["second_line_override"] = value
+            override["second_line_intentionally_blank"] = False
+        else:
+            # Clearing the field intentionally suppresses the date/second line
+            # for this image during the current app session.
+            override["second_line_override"] = ""
+            override["second_line_intentionally_blank"] = True
 
     def _collect_user_settings(self) -> UserSettings:
         """Snapshot current UI state for persistence."""
@@ -533,11 +704,15 @@ class PhotoStampApp(tk.Tk):
             date_font_size_auto=self._date_font_size_auto.get(),
             date_font_size=self._date_font_size.get(),
             date_color=self._date_color.get(),
-            band_enabled=self._band_enabled.get(),
+            show_background_band=self._show_background_band.get(),
             band_position=self._band_position.get(),
             band_size=self._band_size.get(),
             band_color=self._band_color.get(),
             band_opacity=self._band_opacity.get(),
+            export_size_mode=self._export_size_value(),
+            export_width=self._export_width.get(),
+            export_height=self._export_height.get(),
+            export_file_type=self._export_type_value(),
         )
 
     def _apply_user_settings(self, saved: UserSettings) -> None:
@@ -573,11 +748,19 @@ class PhotoStampApp(tk.Tk):
         self._date_font_size_auto.set(saved.date_font_size_auto)
         self._date_font_size.set(saved.date_font_size)
         self._date_color.set(saved.date_color)
-        self._band_enabled.set(saved.band_enabled)
+        self._show_background_band.set(saved.show_background_band)
         self._band_position.set(saved.band_position)
         self._band_size.set(saved.band_size)
         self._band_color.set(saved.band_color)
         self._band_opacity.set(saved.band_opacity)
+        self._export_size_mode.set(
+            EXPORT_SIZE_VALUES.get(saved.export_size_mode, "Original size")
+        )
+        self._export_width.set(saved.export_width)
+        self._export_height.set(saved.export_height)
+        self._export_file_type.set(
+            EXPORT_TYPE_VALUES.get(saved.export_file_type, "Original format")
+        )
 
         # Keep slider labels in sync with restored values.
         if hasattr(self, "_band_size_lbl"):
@@ -586,6 +769,8 @@ class PhotoStampApp(tk.Tk):
             self._opacity_lbl.config(text=f"{saved.band_opacity}%")
         if hasattr(self, "_date_size_spin"):
             self._sync_date_controls()
+        if hasattr(self, "_export_width_spin"):
+            self._sync_export_controls()
 
     def _load_saved_settings(self) -> None:
         """Load preferences from settings.json, using defaults on any error."""
@@ -618,11 +803,15 @@ class PhotoStampApp(tk.Tk):
             if self._date_font_size_auto.get()
             else self._date_font_size.get(),
             date_color=_hex_to_rgb(self._date_color.get()),
-            band_enabled=self._band_enabled.get(),
+            show_background_band=self._show_background_band.get(),
             band_position=BandPosition(self._band_position.get()),
             band_size_ratio=self._band_size.get() / 100,
             band_color=_hex_to_rgb(self._band_color.get()),
             band_opacity=self._band_opacity.get() / 100,
+            export_size_mode=ExportSizeMode(self._export_size_value()),
+            export_width=self._export_width.get(),
+            export_height=self._export_height.get(),
+            export_file_type=ExportFileType(self._export_type_value()),
         )
 
     # ------------------------------------------------------------------
@@ -690,26 +879,44 @@ class PhotoStampApp(tk.Tk):
 
     def _show_current_preview(self) -> None:
         current = self._preview_images[self._preview_index]
-        self._loading_manual_date = True
-        self._manual_date.set(self._manual_dates.get(str(current), ""))
-        self._loading_manual_date = False
         settings = self._get_settings()
 
         try:
             with Image.open(current) as img:
                 img.load()
+                export_img = prepare_for_export(img, settings)
                 stamp_text = resolve_stamp_text(
-                    current, img, settings, manual_dates=self._manual_dates
+                    current,
+                    export_img,
+                    settings,
+                    manual_overrides=self._manual_overrides,
                 )
+                self._loading_manual_fields = True
+                override = self._manual_overrides.get(str(current), {})
+                self._manual_name.set(
+                    str(override.get("name_override", stamp_text.suggested_name))
+                )
+                if bool(override.get("second_line_intentionally_blank", False)):
+                    self._manual_second_line.set("")
+                else:
+                    self._manual_second_line.set(
+                        str(
+                            override.get(
+                                "second_line_override",
+                                stamp_text.suggested_date_text,
+                            )
+                        )
+                    )
+                self._loading_manual_fields = False
                 stamped = stamp_image(
-                    img,
+                    export_img,
                     stamp_text.name,
                     settings,
                     date_text=stamp_text.date_text,
                 )
 
             self._preview_panel.show(stamped)
-            status = f"Preview {self._preview_index + 1}/{len(self._preview_images)}: {current.name}"
+            status = f"Preview {self._preview_index + 1} of {len(self._preview_images)}: {current.name}"
             if stamp_text.warning:
                 status += f" ({stamp_text.warning})"
             self._status_var.set(status)
@@ -744,7 +951,9 @@ class PhotoStampApp(tk.Tk):
         settings = self._get_settings()
         input_folder = self._input_folder
         output_folder = self._output_folder
-        manual_dates = dict(self._manual_dates)
+        manual_overrides = {
+            path: dict(values) for path, values in self._manual_overrides.items()
+        }
 
         def worker() -> None:
             def on_progress(current: int, total: int, message: str) -> None:
@@ -755,7 +964,7 @@ class PhotoStampApp(tk.Tk):
                 input_folder,
                 output_folder,
                 settings,
-                manual_dates=manual_dates,
+                manual_overrides=manual_overrides,
                 on_progress=on_progress,
             )
             self._queue.put(("done", result))

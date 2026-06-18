@@ -8,7 +8,8 @@ from PIL import Image
 
 from photostamp.config import DEFAULT_OUTPUT_FOLDER_NAME, SUPPORTED_EXTENSIONS, StampSettings
 from photostamp.date_utils import resolve_stamp_text
-from photostamp.stamping import save_stamped_image, stamp_image
+from photostamp.exporting import output_path_for, prepare_for_export, save_exported_image
+from photostamp.stamping import stamp_image
 
 
 @dataclass
@@ -43,7 +44,7 @@ def process_folder(
     output_folder: Optional[Path],
     settings: StampSettings,
     *,
-    manual_dates: Optional[dict[str, str]] = None,
+    manual_overrides: Optional[dict[str, dict[str, object]]] = None,
     on_progress: Optional[Callable[[int, int, str], None]] = None,
 ) -> BatchResult:
     """Stamp every supported image in *input_folder* and save copies to *output_folder*.
@@ -68,19 +69,20 @@ def process_folder(
         try:
             with Image.open(img_path) as img:
                 img.load()  # force full decode while file is open
+                export_img = prepare_for_export(img, settings)
                 stamp_text = resolve_stamp_text(
-                    img_path, img, settings, manual_dates=manual_dates
+                    img_path, export_img, settings, manual_overrides=manual_overrides
                 )
                 if stamp_text.warning:
                     result.warnings.append(stamp_text.warning)
                 stamped = stamp_image(
-                    img,
+                    export_img,
                     stamp_text.name,
                     settings,
                     date_text=stamp_text.date_text,
                 )
 
-            save_stamped_image(stamped, out_dir / img_path.name)
+            save_exported_image(stamped, output_path_for(img_path, out_dir, settings), settings)
             result.processed += 1
 
         except Exception as exc:

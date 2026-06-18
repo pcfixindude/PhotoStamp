@@ -54,6 +54,8 @@ class StampText:
     name: str
     date_text: str = ""
     warning: str | None = None
+    suggested_name: str = ""
+    suggested_date_text: str = ""
 
 
 @dataclass
@@ -68,27 +70,38 @@ def resolve_stamp_text(
     image_path: Path,
     image: Image.Image,
     settings: StampSettings,
-    manual_dates: dict[str, str] | None = None,
+    manual_overrides: dict[str, dict[str, object]] | None = None,
 ) -> StampText:
     """Return the name and optional date line for *image_path*."""
     filename_result = extract_date_from_filename(image_path.name)
-    name = (
+    suggested_name = (
         filename_result.name_without_date
         if filename_result and settings.remove_detected_date
         else stamp_text_from_filename(image_path.name, title_case=settings.title_case)
     )
     if settings.title_case:
-        name = name.title()
+        suggested_name = suggested_name.title()
+
+    override = (manual_overrides or {}).get(str(image_path), {})
+    name_override = str(override.get("name_override", "")).strip()
+    name = name_override or suggested_name
 
     if not settings.enable_date_line or settings.date_source == DateSource.NONE:
-        return StampText(name=name)
+        return StampText(name=name, suggested_name=suggested_name)
 
-    manual_value = (manual_dates or {}).get(str(image_path), "").strip()
-    if manual_value:
-        parsed = parse_user_date(manual_value)
-        if parsed:
-            return StampText(name=name, date_text=format_date(parsed, settings))
-        return StampText(name=name, warning=f"{image_path.name}: invalid manual date")
+    if bool(override.get("second_line_intentionally_blank", False)):
+        return StampText(name=name, suggested_name=suggested_name)
+
+    if "second_line_override" in override:
+        # The user-edited second line is treated as display text, not reparsed,
+        # so it can be any custom wording they want.
+        second = str(override.get("second_line_override", "")).strip()
+        return StampText(
+            name=name,
+            date_text=second,
+            suggested_name=suggested_name,
+            suggested_date_text=second,
+        )
 
     resolved: date | None = None
     warning: str | None = None
@@ -105,16 +118,25 @@ def resolve_stamp_text(
         else:
             warning = f"{image_path.name}: no date found at filename ending"
     elif settings.date_source == DateSource.AUTO:
-        resolved = date_from_exif(image)
+        # Auto-detect intentionally prefers filename endings first. Sponsor and
+        # school-photo workflows often encode the intended date in the name, and
+        # that should override EXIF/file timestamps when present.
+        if filename_result:
+            resolved = filename_result.taken_date
+        if resolved is None:
+            resolved = date_from_exif(image)
         if resolved is None:
             resolved = date_from_file_timestamp(image_path)
         if resolved is None:
             warning = f"{image_path.name}: no date could be detected"
 
+    date_text = format_date(resolved, settings) if resolved else ""
     return StampText(
         name=name,
-        date_text=format_date(resolved, settings) if resolved else "",
+        date_text=date_text,
         warning=warning,
+        suggested_name=suggested_name,
+        suggested_date_text=date_text,
     )
 
 
@@ -148,9 +170,11 @@ def date_from_file_timestamp(path: Path) -> date | None:
     except OSError:
         return None
 
-    # On Windows/macOS, st_ctime is creation/change-ish time; on Unix it is
-    # metadata-change time, so mtime remains the final fallback either way.
-    for timestamp in (getattr(stat, "st_birthtime", None), stat.st_ctime, stat.st_mtime):
+    created_timestamp = getattr(stat, "st_birthtime", None)
+    if created_timestamp is None and sys.platform == "win32":
+        created_timestamp = stat.st_ctime
+
+    for timestamp in (created_timestamp, stat.st_mtime):
         if timestamp:
             try:
                 return datetime.fromtimestamp(timestamp).date()

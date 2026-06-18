@@ -83,7 +83,8 @@ The PhotoStamp window should open. If it does not, see [Troubleshooting](#troubl
 2. **Select Output Folder** *(optional)* — click *Browse…* next to "Output". If you skip this, stamped copies are saved to a `PhotoStamp Output` subfolder inside the input folder.
 3. **Adjust settings** as needed (see below).
 4. **Preview** — click *Preview First Image* to see how the stamp looks before committing.
-5. **Stamp** — click *Stamp All Photos* to process the entire folder. A progress bar and status message track the run. Any errors are reported at the end without stopping the batch.
+5. **Review** — use **Previous** / **Next** to move through images, and edit the per-image name or second line/date if needed.
+6. **Stamp** — click *Stamp All Photos* to process the entire folder. A progress bar and status message track the run. Any errors are reported at the end without stopping the batch.
 
 ### Saved settings
 
@@ -94,7 +95,7 @@ PhotoStamp remembers your preferences in a local `settings.json` file.
 
 Settings are loaded when the app starts and saved when you close the app or finish a batch stamp.
 
-Saved items include last input/output folders, title-case preference, font, text options, date-line options, and band options. Image data is never stored.
+Saved items include last input/output folders, title-case preference, font, text options, date-line options, background-band options, and export options. Image data is never stored.
 
 If `settings.json` is missing or corrupted, the app falls back to defaults and continues normally. The file is listed in `.gitignore` so it is not committed to Git.
 
@@ -107,7 +108,7 @@ If `settings.json` is missing or corrupted, the app falls back to defaults and c
 | Size / Auto | Font size in pt; leave *Auto* checked to fit the band automatically |
 | Color (Text) | Colour of the stamp text |
 | Align | Horizontal text alignment: Left / Center / Right |
-| Band Enabled | Toggle the coloured band on or off |
+| Show background band | Toggle only the coloured background rectangle; stamped text still prints when this is off |
 | Position | Which edge the band sits on: bottom, top, left, or right |
 | Size % | Band thickness as a percentage of the image dimension it spans |
 | Color (Band) | Fill colour of the band |
@@ -146,13 +147,15 @@ The date line uses the same font family by default, with an automatically smalle
 
 | Source | What it does |
 |---|---|
-| Auto-detect per image | Reads EXIF `DateTimeOriginal`, then EXIF `DateTimeDigitized`; falls back to file created timestamp when available, then modified timestamp |
+| Auto-detect per image | Parses a filename-ending date first, then reads EXIF `DateTimeOriginal`, then EXIF `DateTimeDigitized`; falls back to file created timestamp when available, then modified timestamp |
 | Use one batch date | Uses the same date for every photo |
 | Manually assign per image | Uses the editable **This image** date field while previewing; use Previous / Next to move through images |
 | Extract date from filename | Detects a date at the end of the filename and uses it as the date line |
 | No date line | Disables the second line |
 
-File created timestamps are not always the true photo-taken date. They can change when photos are copied, downloaded, exported, or synced. EXIF dates are preferred when available.
+For auto-detect, filename dates win over EXIF and file timestamps. This is useful when the filename carries the intended date. If no filename date exists, PhotoStamp tries EXIF photo dates, then file created time, then file modified time.
+
+File created timestamps are not always the true photo-taken date. They can change when photos are copied, downloaded, exported, or synced.
 
 #### Batch/manual date entry
 
@@ -163,7 +166,17 @@ The batch date and manual per-image date fields accept common formats such as:
 - `Jan 31, 2026`
 - `January 31, 2026`
 
-Manual per-image dates are stored in memory for the current app session and are not written to `settings.json`.
+Manual per-image corrections are stored in memory for the current app session and are not written to `settings.json`.
+
+#### Manual per-image corrections
+
+While previewing, the **Name for this image** field shows the suggested displayed name. The **Second line / Date** field shows the suggested date line from the selected source.
+
+- Edit the name to override the displayed name for that image.
+- Clear the name to fall back to the suggested name.
+- Edit the second line/date to override auto-detection, batch date, EXIF, and filename parsing.
+- Clear the second line/date to intentionally suppress the date line for that image.
+- Use **Previous** and **Next** to review all photos before stamping; returning to an image restores your edits.
 
 #### Filename date examples
 
@@ -194,6 +207,41 @@ Available date display formats:
 - Custom Python `strftime` format, such as `%B %d, %Y`, `%m/%d/%Y`, or `%Y-%m-%d`
 
 If the custom format is blank or invalid, PhotoStamp falls back to `January 31, 2026`.
+
+### Background band behavior
+
+The **Show background band** checkbox controls only the white/colored rectangle behind the stamp.
+
+- When it is on, PhotoStamp draws the selected band color and opacity.
+- When it is off, PhotoStamp still stamps the name and optional date line directly onto the photo.
+- Band position and size still define the stamp/text area either way.
+
+If text is hard to read without a background band, turn the band back on or choose a more visible text color.
+
+### Export settings
+
+By default, PhotoStamp exports at the original image size and original file format.
+
+Size options:
+
+| Option | Behavior |
+|---|---|
+| Original size | Do not resize |
+| Resize by width | Set output width and preserve aspect ratio |
+| Resize by height | Set output height and preserve aspect ratio |
+| Fit within box | Fit inside the given width and height while preserving aspect ratio |
+| Custom width x height | Resize to exact dimensions; this may change aspect ratio |
+
+File type options:
+
+| Option | Behavior |
+|---|---|
+| Original format | Keep the source image format when practical |
+| JPEG | Save as `.jpg` with high quality; alpha is converted to RGB |
+| PNG | Save as `.png` |
+| WEBP | Save as `.webp` with high quality |
+
+PhotoStamp resizes first, then stamps onto the final output size. This keeps band thickness and auto font sizing predictable.
 
 ### Supported formats
 
@@ -339,6 +387,7 @@ PhotoStamp/
 │   ├── config.py              # StampSettings dataclass + enums + defaults
 │   ├── filename.py            # Filename → stamp text
 │   ├── date_utils.py          # Date detection, parsing, and formatting
+│   ├── exporting.py           # Resize and output format helpers
 │   ├── fonts.py               # Cross-platform font discovery
 │   ├── stamping.py            # Pillow: draw band + text, save
 │   ├── batch.py               # Folder scan + batch loop

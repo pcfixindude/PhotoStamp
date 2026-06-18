@@ -119,7 +119,8 @@ def stamp_image(
     img = image.copy()
 
     date_text = date_text.strip()
-    if not settings.band_enabled or not text.strip():
+    text = text.strip()
+    if not text and not date_text:
         return img
 
     w, h = img.size
@@ -139,18 +140,19 @@ def stamp_image(
 
     bx1, by1, _bx2, _by2 = band_box
 
-    # --- Draw band via RGBA alpha-composite ---
+    # --- Prepare RGBA drawing surface ---
     # Converting to RGBA lets us paint a partially-transparent rectangle
     # cleanly over any source mode (RGB, P, L, etc.).
     original_mode = img.mode
     img_rgba = img.convert("RGBA")
 
-    band_alpha = int(settings.band_opacity * 255)
-    overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
-    ImageDraw.Draw(overlay).rectangle(
-        band_box, fill=(*settings.band_color, band_alpha)
-    )
-    img_rgba = Image.alpha_composite(img_rgba, overlay)
+    if settings.show_background_band:
+        band_alpha = int(settings.band_opacity * 255)
+        overlay = Image.new("RGBA", img.size, (0, 0, 0, 0))
+        ImageDraw.Draw(overlay).rectangle(
+            band_box, fill=(*settings.band_color, band_alpha)
+        )
+        img_rgba = Image.alpha_composite(img_rgba, overlay)
 
     # --- Resolve font and size ---
     font_size = settings.font_size

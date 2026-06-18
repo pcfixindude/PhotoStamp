@@ -11,7 +11,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Optional
 
-from photostamp.config import DEFAULT_FONT_FAMILY, DateDisplayFormat, DateSource
+from photostamp.config import (
+    DEFAULT_FONT_FAMILY,
+    DateDisplayFormat,
+    DateSource,
+    ExportFileType,
+    ExportSizeMode,
+)
 
 
 def _settings_dir() -> Path:
@@ -32,6 +38,8 @@ _VALID_ALIGNMENTS = {"left", "center", "right"}
 _VALID_BAND_POSITIONS = {"top", "bottom", "left", "right"}
 _VALID_DATE_SOURCES = {item.value for item in DateSource}
 _VALID_DATE_FORMATS = {item.value for item in DateDisplayFormat}
+_VALID_EXPORT_SIZE_MODES = {item.value for item in ExportSizeMode}
+_VALID_EXPORT_FILE_TYPES = {item.value for item in ExportFileType}
 
 
 @dataclass
@@ -55,11 +63,15 @@ class UserSettings:
     date_font_size_auto: bool = True
     date_font_size: int = 24
     date_color: str = "#000000"
-    band_enabled: bool = True
+    show_background_band: bool = True
     band_position: str = "bottom"
     band_size: int = 15
     band_color: str = "#ffffff"
     band_opacity: int = 100
+    export_size_mode: str = ExportSizeMode.ORIGINAL.value
+    export_width: int = 1600
+    export_height: int = 1200
+    export_file_type: str = ExportFileType.ORIGINAL.value
 
 
 def settings_path() -> Path:
@@ -135,13 +147,28 @@ def _parse_settings(raw: dict[str, Any], defaults: UserSettings) -> UserSettings
             raw.get("date_font_size"), 6, 300, defaults.date_font_size
         ),
         date_color=_hex_color(raw.get("date_color"), defaults.date_color),
-        band_enabled=_bool(raw.get("band_enabled"), defaults.band_enabled),
+        show_background_band=_bool(
+            raw.get("show_background_band", raw.get("band_enabled")),
+            defaults.show_background_band,
+        ),
         band_position=_choice(
             raw.get("band_position"), _VALID_BAND_POSITIONS, defaults.band_position
         ),
         band_size=_int_in_range(raw.get("band_size"), 3, 50, defaults.band_size),
         band_color=_hex_color(raw.get("band_color"), defaults.band_color),
         band_opacity=_int_in_range(raw.get("band_opacity"), 0, 100, defaults.band_opacity),
+        export_size_mode=_choice(
+            raw.get("export_size_mode"),
+            _VALID_EXPORT_SIZE_MODES,
+            defaults.export_size_mode,
+        ),
+        export_width=_int_in_range(raw.get("export_width"), 1, 50000, defaults.export_width),
+        export_height=_int_in_range(raw.get("export_height"), 1, 50000, defaults.export_height),
+        export_file_type=_choice(
+            raw.get("export_file_type"),
+            _VALID_EXPORT_FILE_TYPES,
+            defaults.export_file_type,
+        ),
     )
 
 
